@@ -1,0 +1,19 @@
+# PyInstaller
+dist/
+build/
+*.manifest
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Inno Setup output
+Setup-AWSMonitor-*.exe
+
+# OS
+Thumbs.db
+.DS_Store
