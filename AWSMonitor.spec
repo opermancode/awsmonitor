@@ -6,7 +6,7 @@ a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('assets/leaf.ico', 'assets')],
     hiddenimports=['cryptography.hazmat.primitives.kdf.pbkdf2'],
     hookspath=[],
     runtime_hooks=[],
@@ -27,5 +27,5 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon=None,
+    icon='assets/leaf.ico',
 )
