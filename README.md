@@ -28,8 +28,12 @@ It's easy to spin up an EC2 instance, RDS database, NAT gateway or load balancer
 
 **Recommended:** download `Setup-AWSMonitor-X.Y.exe` from the
 [Releases page](https://github.com/opermancode/awsmonitor/releases) and run it.
+The installer automatically downloads and installs **AWS CLI v2** too
+(if missing), since the built-in terminal needs it.
+(Windows will show one UAC prompt for the AWS CLI part.)
 
-Or use the portable `AWSMonitor.exe` (no install needed).
+Or use the portable `AWSMonitor.exe` (no install needed) — but then install
+[AWS CLI](https://aws.amazon.com/cli/) yourself for the terminal tab.
 
 > Windows SmartScreen may warn about the download since the app isn't code-signed yet — click *More info → Run anyway*.
 

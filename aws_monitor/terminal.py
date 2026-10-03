@@ -54,7 +54,9 @@ class AWSTerminal(ttk.Frame):
         self._print(HELP_TEXT)
         if not shutil.which("aws"):
             self._print("WARNING: `aws` CLI not found on PATH.\n"
-                        "Install it from https://aws.amazon.com/cli/ (Windows MSI),\n"
+                        "Re-run the latest AWS Monitor Setup installer (it installs\n"
+                        "AWS CLI v2 automatically), or get it from\n"
+                        "https://aws.amazon.com/cli/ (Windows MSI),\n"
                         "then restart this app. Commands will fail until then.\n")
         self.after(120, self._poll)
 

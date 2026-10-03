@@ -41,4 +41,50 @@ Name: "{group}\AWS Monitor"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\AWS Monitor"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+Filename: "msiexec.exe"; Parameters: "/i ""{tmp}\AWSCLIV2.msi"" /qn /norestart"; StatusMsg: "Installing AWS CLI v2 (needed for the built-in terminal)..."; Flags: waituntilterminated; Check: AWSCLINeeded
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,AWS Monitor}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+var
+  AWSCLIDownloadPage: TDownloadWizardPage;
+
+function AWSCLIInstalled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{pf}\Amazon\AWSCLIV2\aws.exe'));
+end;
+
+function AWSCLINeeded: Boolean;
+begin
+  Result := (not AWSCLIInstalled) and FileExists(ExpandConstant('{tmp}\AWSCLIV2.msi'));
+end;
+
+procedure InitializeWizard;
+begin
+  AWSCLIDownloadPage := CreateDownloadPage(
+    SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID = wpReady) and (not AWSCLIInstalled) then
+  begin
+    AWSCLIDownloadPage.Clear;
+    AWSCLIDownloadPage.Add('https://awscli.amazonaws.com/AWSCLIV2.msi',
+      'AWSCLIV2.msi', '');
+    AWSCLIDownloadPage.Show;
+    try
+      try
+        AWSCLIDownloadPage.Download;
+      except
+        if MsgBox('AWS CLI v2 could not be downloaded.' + #13#10 +
+          'The built-in AWS CLI terminal needs it to run commands.' + #13#10 +
+          'Continue installing AWS Monitor without AWS CLI?',
+          mbConfirmation, MB_YESNO) = IDNO then
+          Result := False;
+      end;
+    finally
+      AWSCLIDownloadPage.Hide;
+    end;
+  end;
+end;
