@@ -29,11 +29,33 @@ def ask_password(parent, prompt="Enter app password:"):
     return d.value
 
 
+<<<<<<< HEAD
+=======
+def asset_path(name: str) -> str:
+    """Locate a bundled asset (works from source and from the PyInstaller exe)."""
+    import os
+    import sys
+    from pathlib import Path
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return os.path.join(meipass, "assets", name)
+    return str(Path(__file__).resolve().parent.parent / "assets" / name)
+
+
+>>>>>>> 2882c49 (Local AWS Monitor files)
 class AWMonitorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("AWS Monitor — Bill Saver")
         self.root.geometry("1060x760")
+<<<<<<< HEAD
+=======
+        try:
+            self.root.iconbitmap(default=asset_path("leaf.ico"))
+        except Exception:
+            pass
+>>>>>>> 2882c49 (Local AWS Monitor files)
 
         self.q: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
