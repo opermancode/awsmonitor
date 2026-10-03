@@ -17,9 +17,12 @@ HELP_TEXT = (
     "  aws sts get-caller-identity\n"
     "  aws ec2 describe-instances --region us-east-1 --query Reservations[].Instances[].InstanceId\n"
     "  aws s3 ls\n"
-    "Built-ins:  help | clear\n"
+    "Built-ins:  help | clear | aws install  (downloads + installs AWS CLI v2)\n"
     "Keys are injected from your saved (locked) credentials for each command.\n"
 )
+
+AWSCLI_URL = "https://awscli.amazonaws.com/AWSCLIV2.msi"
+AWSCLI_DIR = r"C:\Program Files\Amazon\AWSCLIV2"
 
 
 class AWSTerminal(ttk.Frame):
@@ -101,6 +104,9 @@ class AWSTerminal(ttk.Frame):
         if low == "help":
             self._print(HELP_TEXT)
             return
+        if low == "aws install":
+            threading.Thread(target=self._install_awscli, daemon=True).start()
+            return
         if low != "aws" and not low.startswith("aws "):
             self._print("Only `aws ...` commands are allowed here (plus help/clear).")
             return
@@ -117,6 +123,65 @@ class AWSTerminal(ttk.Frame):
             self.hist_idx += 1
             self.entry.delete(0, tk.END)
             self.entry.insert(0, self.history[self.hist_idx])
+
+    # ---------- AWS CLI self-install ----------
+    def _install_awscli(self):
+        import tempfile
+        import urllib.request
+
+        self._busy = True
+        try:
+            if os.name != "nt":
+                self._q.put(("done", "$ (auto-install supports Windows only — "
+                                     "see https://aws.amazon.com/cli/)"))
+                return
+            existing = os.path.join(AWSCLI_DIR, "aws.exe")
+            if os.path.exists(existing) and not shutil.which("aws"):
+                # installed but PATH is stale in this process — just refresh it
+                os.environ["PATH"] += os.pathsep + AWSCLI_DIR
+                self._q.put(("line", "Found existing AWS CLI, refreshed PATH."))
+            elif shutil.which("aws"):
+                self._q.put(("done", "$ (AWS CLI is already installed)"))
+                return
+            else:
+                dest = os.path.join(tempfile.gettempdir(), "AWSCLIV2.msi")
+                self._q.put(("line", "Downloading AWS CLI v2 (official AWS build)…"))
+                req = urllib.request.Request(AWSCLI_URL,
+                                             headers={"User-Agent": "AWSMonitor"})
+                with urllib.request.urlopen(req, timeout=60) as r, \
+                        open(dest, "wb") as f:
+                    total = int(r.headers.get("Content-Length") or 0)
+                    done = 0
+                    while True:
+                        chunk = r.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        if total and done % (4 * 1024 * 1024) < 256 * 1024:
+                            self._q.put(("line",
+                                         f"  … {done // 1024 // 1024} / "
+                                         f"{total // 1024 // 1024} MB"))
+                self._q.put(("line", "Downloaded. Installing (accept the UAC prompt)…"))
+                rc = subprocess.run(
+                    ["msiexec", "/i", dest, "/qn", "/norestart"],
+                    timeout=600).returncode
+                if rc != 0:
+                    self._q.put(("done", f"$ (installer exited with code {rc} — "
+                                        "if you declined the admin prompt, run "
+                                        "`aws install` again and accept it)"))
+                    return
+                os.environ["PATH"] += os.pathsep + AWSCLI_DIR
+            # verify
+            check = subprocess.run(["aws", "--version"], capture_output=True,
+                                   text=True, timeout=60)
+            out = (check.stdout or check.stderr or "").strip()
+            self._q.put(("done", f"$ AWS CLI ready: {out}\n"
+                                 "$ (restart the app if new shells still miss it)"))
+        except Exception as e:
+            self._q.put(("done", f"$ (install failed: {e})"))
+        finally:
+            self._busy = False
 
     # ---------- execution ----------
     def _run(self, cmd):
