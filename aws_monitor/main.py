@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tkinter import messagebox, simpledialog, ttk
 
 from . import auth, scanner, secure_store, updater
+from .terminal import AWSTerminal
 
 
 class PasswordDialog(simpledialog.Dialog):
@@ -57,6 +58,19 @@ class AWMonitorApp:
         self.total_tasks = 1
         self.done_tasks = 0
         self._pending_update = None
+        self._all_rows: list = []
+        self._services: set = set()
+
+        try:
+            style = ttk.Style()
+            if "clam" in style.theme_names():
+                style.theme_use("clam")
+            style.configure("Accent.TButton", background="#2e7d32", foreground="white",
+                            font=("Segoe UI", 9, "bold"))
+            style.map("Accent.TButton",
+                      background=[("active", "#43a047"), ("disabled", "#9e9e9e")])
+        except Exception:
+            pass
 
         self._build_menu()
         self._build_layout()
@@ -82,6 +96,14 @@ class AWMonitorApp:
         top = ttk.Frame(self.root, padding=8)
         top.pack(fill=tk.X)
 
+        try:
+            self.logo_img = tk.PhotoImage(file=asset_path("leaf.png")).subsample(8, 8)
+            ttk.Label(top, image=self.logo_img).pack(side=tk.LEFT, padx=(0, 6))
+        except Exception:
+            pass
+        ttk.Label(top, text="AWS Monitor", font=("Segoe UI", 13, "bold")).pack(
+            side=tk.LEFT, padx=(0, 10))
+
         self.cred_status = ttk.Label(top, text="AWS keys: …")
         self.cred_status.pack(side=tk.LEFT, padx=(0, 10))
 
@@ -89,7 +111,8 @@ class AWMonitorApp:
         ttk.Button(top, text="Settings: app password", command=self.on_set_password).pack(side=tk.LEFT, padx=6)
 
         # visible ONLY when a newer release exists (hidden otherwise)
-        self.update_btn = ttk.Button(top, text="Update", command=self.on_update_button)
+        self.update_btn = ttk.Button(top, text="Update", command=self.on_update_button,
+                                     style="Accent.TButton")
 
         ctrl = ttk.LabelFrame(self.root, text="Scan", padding=8)
         ctrl.pack(fill=tk.X, padx=8, pady=4)
@@ -101,7 +124,8 @@ class AWMonitorApp:
                                        width=22, state="readonly")
         self.region_box.grid(row=0, column=1, padx=6)
 
-        self.scan_btn = ttk.Button(ctrl, text="Scan now", command=self.start_scan)
+        self.scan_btn = ttk.Button(ctrl, text="▶ Scan now", command=self.start_scan,
+                                   style="Accent.TButton")
         self.scan_btn.grid(row=0, column=2, padx=6)
         self.stop_btn = ttk.Button(ctrl, text="Stop", command=self.stop_scan, state=tk.DISABLED)
         self.stop_btn.grid(row=0, column=3, padx=6)
@@ -113,7 +137,30 @@ class AWMonitorApp:
         self.status = ttk.Label(ctrl, text="Ready. Keys stay saved & locked behind your app password.")
         self.status.grid(row=1, column=0, columnspan=5, sticky=tk.W, pady=(6, 0))
 
-        mid = ttk.Frame(self.root, padding=(8, 0))
+        self.tabs = ttk.Notebook(self.root)
+        self.tabs.pack(fill=tk.BOTH, expand=True, padx=8)
+        res_tab = ttk.Frame(self.tabs, padding=4)
+        self.tabs.add(res_tab, text="📦 Resources")
+        cli_tab = ttk.Frame(self.tabs, padding=4)
+        self.tabs.add(cli_tab, text="💻 AWS CLI")
+
+        filt = ttk.Frame(res_tab)
+        filt.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(filt, text="Search:").pack(side=tk.LEFT)
+        self.search_var = tk.StringVar()
+        s_entry = ttk.Entry(filt, textvariable=self.search_var, width=28)
+        s_entry.pack(side=tk.LEFT, padx=6)
+        self.search_var.trace_add("write", lambda *_: self._apply_filter())
+        ttk.Label(filt, text="Service:").pack(side=tk.LEFT)
+        self.svc_var = tk.StringVar(value="All services")
+        self.svc_box = ttk.Combobox(filt, textvariable=self.svc_var, width=18,
+                                    state="readonly", values=["All services"])
+        self.svc_box.pack(side=tk.LEFT, padx=6)
+        self.svc_box.bind("<<ComboboxSelected>>", lambda _e: self._apply_filter())
+        self.count_label = ttk.Label(filt, text="0/0 shown")
+        self.count_label.pack(side=tk.RIGHT)
+
+        mid = ttk.Frame(res_tab)
         mid.pack(fill=tk.BOTH, expand=True)
         cols = ("service", "resource", "detail", "state", "region")
         self.tree = ttk.Treeview(mid, columns=cols, show="headings")
@@ -126,6 +173,13 @@ class AWMonitorApp:
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.summary = ttk.Label(res_tab, text="Run a scan to list billable resources.",
+                                 anchor=tk.W)
+        self.summary.pack(fill=tk.X, pady=(4, 0))
+
+        self.terminal = AWSTerminal(cli_tab, creds_provider=self._get_scan_creds)
+        self.terminal.pack(fill=tk.BOTH, expand=True)
 
         logf = ttk.LabelFrame(self.root, text="Log", padding=4)
         logf.pack(fill=tk.X, padx=8, pady=6)
@@ -259,6 +313,33 @@ class AWMonitorApp:
             return None
         self._session_pw = pw  # keep in memory only, never written to disk
         return creds
+
+    # ---------- results filter + summary ----------
+    def _row_matches(self, row):
+        q = self.search_var.get().lower()
+        svc = self.svc_var.get()
+        if svc != "All services" and row[0] != svc:
+            return False
+        return not q or q in " ".join(row).lower()
+
+    def _apply_filter(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for row in self._all_rows:
+            if self._row_matches(row):
+                self.tree.insert("", tk.END, values=row)
+        self.count_label.config(
+            text=f"{len(self.tree.get_children())}/{len(self._all_rows)} shown")
+
+    def _update_summary(self):
+        from collections import Counter
+
+        c = Counter(r[0] for r in self._all_rows)
+        if not c:
+            self.summary.config(text="No billable resources found in scanned scope.")
+            return
+        self.summary.config(text="  •  ".join(f"{s}: {n}" for s, n in sorted(c.items()))
+                            + f"  •  Total: {len(self._all_rows)}")
 
     # ---------- self-update ----------
     def _offer_update(self, pending):
@@ -445,6 +526,12 @@ class AWMonitorApp:
 
         for i in self.tree.get_children():
             self.tree.delete(i)
+        self._all_rows = []
+        self._services = set()
+        self.svc_box.config(values=["All services"])
+        self.svc_var.set("All services")
+        self.count_label.config(text="0/0 shown")
+        self.summary.config(text="Scanning…")
         self.stop_event.clear()
         self.scanning = True
         self.scan_btn.config(state=tk.DISABLED)
@@ -515,20 +602,28 @@ class AWMonitorApp:
             while True:
                 kind, payload = self.q.get_nowait()
                 if kind == "__row__":
-                    self.tree.insert("", tk.END, values=payload)
+                    self._all_rows.append(payload)
+                    if payload[0] not in self._services:
+                        self._services.add(payload[0])
+                        self.svc_box.config(values=["All services"] + sorted(self._services))
+                    if self._row_matches(payload):
+                        self.tree.insert("", tk.END, values=payload)
+                    self.count_label.config(
+                        text=f"{len(self.tree.get_children())}/{len(self._all_rows)} shown")
                 elif kind == "__progress__":
                     self.done_tasks += 1
                     self.progress["value"] = self.done_tasks
                     self.status.config(
                         text=f"Scanning… {self.done_tasks}/{self.total_tasks} "
-                             f"({len(self.tree.get_children())} resources found)")
+                             f"({len(self._all_rows)} resources found)")
                 elif kind == "__log__":
                     self.log(payload)
                 elif kind == "__done__":
                     self.scanning = False
                     self.scan_btn.config(state=tk.NORMAL)
                     self.stop_btn.config(state=tk.DISABLED)
-                    n = len(self.tree.get_children())
+                    n = len(self._all_rows)
+                    self._update_summary()
                     self.status.config(text=f"Done — {n} billable resources found. Stop/delete what you don't need.")
                     self.log(f"Scan finished: {n} resources.")
                     if n == 0:
