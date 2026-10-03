@@ -26,7 +26,7 @@ It's easy to spin up an EC2 instance, RDS database, NAT gateway or load balancer
 
 ## Install
 
-**Recommended:** download `Setup-AWSMonitor-X.Y.exe` from the
+**Recommended:** download `Setup-AWSMonitor-vX.Y.exe` from the
 [Releases page](https://github.com/opermancode/awsmonitor/releases) and run it.
 The installer automatically downloads and installs **AWS CLI v2** too
 (if missing), since the built-in terminal needs it.
@@ -60,7 +60,7 @@ python -m aws_monitor        # or: python run.py
 1. Bump `__version__` in `aws_monitor/__init__.py` (and `MyAppVersion` in `installer.iss` for local builds).
 2. Commit and push to `main`.
 3. Tag and push the tag: `git tag vX.Y.Z; git push origin vX.Y.Z`
-4. GitHub Actions builds `AWSMonitor.exe` + `Setup-AWSMonitor-X.Y.exe` and attaches both to the release.
+4. GitHub Actions builds `AWSMonitor.exe` + `Setup-AWSMonitor-vX.Y.exe` and attaches both to the release.
 5. Installed apps detect the new release and show the ⬆ Update button.
 
 ## Project layout
