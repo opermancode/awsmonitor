@@ -1,0 +1,384 @@
+"""AWS Monitor desktop app — creds locked behind app password, no screen lock."""
+import queue
+import threading
+import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor
+from tkinter import messagebox, simpledialog, ttk
+
+from . import auth, scanner, secure_store
+
+
+class PasswordDialog(simpledialog.Dialog):
+    def __init__(self, parent, title="App password", prompt="Enter app password:"):
+        self.prompt = prompt
+        self.value = None
+        super().__init__(parent, title)
+
+    def body(self, master):
+        tk.Label(master, text=self.prompt).pack(padx=10, pady=5)
+        self.entry = tk.Entry(master, show="*", width=30)
+        self.entry.pack(padx=10, pady=5)
+        return self.entry
+
+    def apply(self):
+        self.value = self.entry.get()
+
+
+def ask_password(parent, prompt="Enter app password:"):
+    d = PasswordDialog(parent, prompt=prompt)
+    return d.value
+
+
+def asset_path(name: str) -> str:
+    """Locate a bundled asset (works from source and from the PyInstaller exe)."""
+    import os
+    import sys
+    from pathlib import Path
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return os.path.join(meipass, "assets", name)
+    return str(Path(__file__).resolve().parent.parent / "assets" / name)
+
+
+class AWMonitorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("AWS Monitor — Bill Saver")
+        self.root.geometry("1060x760")
+        try:
+            self.root.iconbitmap(default=asset_path("leaf.ico"))
+        except Exception:
+            pass
+
+        self.q: queue.Queue = queue.Queue()
+        self.stop_event = threading.Event()
+        self.scanning = False
+        self.total_tasks = 1
+        self.done_tasks = 0
+
+        self._build_menu()
+        self._build_layout()
+        self._refresh_cred_status()
+        self.root.after(120, self._poll_queue)
+
+    # ---------- layout ----------
+    def _build_menu(self):
+        menubar = tk.Menu(self.root)
+        settings = tk.Menu(menubar, tearoff=0)
+        settings.add_command(label="Set / change app password…", command=self.on_set_password)
+        settings.add_command(label="View / update AWS keys… (needs password)", command=self.on_edit_creds)
+        settings.add_command(label="Clear saved AWS keys…", command=self.on_clear_creds)
+        settings.add_separator()
+        settings.add_command(label="Exit", command=self.root.quit)
+        menubar.add_cascade(label="Settings", menu=settings)
+        self.root.config(menu=menubar)
+
+    def _build_layout(self):
+        top = ttk.Frame(self.root, padding=8)
+        top.pack(fill=tk.X)
+
+        self.cred_status = ttk.Label(top, text="AWS keys: …")
+        self.cred_status.pack(side=tk.LEFT, padx=(0, 10))
+
+        ttk.Button(top, text="Unlock / Edit keys", command=self.on_edit_creds).pack(side=tk.LEFT)
+        ttk.Button(top, text="Settings: app password", command=self.on_set_password).pack(side=tk.LEFT, padx=6)
+
+        ctrl = ttk.LabelFrame(self.root, text="Scan", padding=8)
+        ctrl.pack(fill=tk.X, padx=8, pady=4)
+
+        ttk.Label(ctrl, text="Region:").grid(row=0, column=0, sticky=tk.W)
+        self.region_var = tk.StringVar(value="ALL regions")
+        regions = ["ALL regions"] + scanner.REGIONS
+        self.region_box = ttk.Combobox(ctrl, textvariable=self.region_var, values=regions,
+                                       width=22, state="readonly")
+        self.region_box.grid(row=0, column=1, padx=6)
+
+        self.scan_btn = ttk.Button(ctrl, text="Scan now", command=self.start_scan)
+        self.scan_btn.grid(row=0, column=2, padx=6)
+        self.stop_btn = ttk.Button(ctrl, text="Stop", command=self.stop_scan, state=tk.DISABLED)
+        self.stop_btn.grid(row=0, column=3, padx=6)
+
+        self.progress = ttk.Progressbar(ctrl, mode="determinate", length=400)
+        self.progress.grid(row=0, column=4, padx=10, sticky=tk.EW)
+        ctrl.columnconfigure(4, weight=1)
+
+        self.status = ttk.Label(ctrl, text="Ready. Keys stay saved & locked behind your app password.")
+        self.status.grid(row=1, column=0, columnspan=5, sticky=tk.W, pady=(6, 0))
+
+        mid = ttk.Frame(self.root, padding=(8, 0))
+        mid.pack(fill=tk.BOTH, expand=True)
+        cols = ("service", "resource", "detail", "state", "region")
+        self.tree = ttk.Treeview(mid, columns=cols, show="headings")
+        for c, h, w in [("service", "Service", 110), ("resource", "Resource", 260),
+                        ("detail", "Detail", 200), ("state", "State", 110),
+                        ("region", "Region", 110)]:
+            self.tree.heading(c, text=h)
+            self.tree.column(c, width=w)
+        sb = ttk.Scrollbar(mid, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        logf = ttk.LabelFrame(self.root, text="Log", padding=4)
+        logf.pack(fill=tk.X, padx=8, pady=6)
+        self.log_text = tk.Text(logf, height=5, state="disabled")
+        self.log_text.pack(fill=tk.X)
+
+    # ---------- cred lock ----------
+    def _refresh_cred_status(self):
+        if secure_store.has_saved_creds():
+            self.cred_status.config(text="AWS keys: ✅ saved (locked)")
+        else:
+            self.cred_status.config(text="AWS keys: ❌ not saved — use Settings to add")
+
+    def _require_password(self):
+        """Every view/change of creds must re-enter the app password."""
+        if not auth.has_password():
+            messagebox.showinfo("No app password yet",
+                                "Set an app password first (Settings → Set / change app password).")
+            return None
+        pw = ask_password(self.root, "Re-enter app password to view / change AWS keys:")
+        if not pw:
+            return None
+        if not auth.verify_password(pw):
+            messagebox.showerror("Denied", "Incorrect app password.")
+            return None
+        return pw
+
+    def on_set_password(self):
+        if auth.has_password():
+            cur = ask_password(self.root, "Enter current app password:")
+            if not cur or not auth.verify_password(cur):
+                messagebox.showerror("Denied", "Incorrect current password.")
+                return
+            new1 = ask_password(self.root, "Enter NEW app password (min 4 chars):")
+            if not new1:
+                return
+            new2 = ask_password(self.root, "Confirm NEW app password:")
+            if new1 != new2:
+                messagebox.showerror("Mismatch", "Passwords do not match.")
+                return
+            try:
+                auth.change_password(cur, new1)
+                messagebox.showinfo("Done", "App password changed. Saved keys were re-encrypted.")
+            except ValueError as e:
+                messagebox.showerror("Error", str(e))
+        else:
+            p1 = ask_password(self.root, "Create app password (min 4 chars):")
+            if not p1:
+                return
+            p2 = ask_password(self.root, "Confirm app password:")
+            if p1 != p2:
+                messagebox.showerror("Mismatch", "Passwords do not match.")
+                return
+            try:
+                auth.set_password(p1)
+                messagebox.showinfo("Done", "App password set. Now add your AWS keys via Settings.")
+            except ValueError as e:
+                messagebox.showerror("Error", str(e))
+
+    def on_edit_creds(self):
+        pw = self._require_password()
+        if pw is None:
+            return
+        # password OK → show current (decrypted only in memory) and allow update
+        cur_a, cur_s = "", ""
+        if secure_store.has_saved_creds():
+            try:
+                cur_a, cur_s = secure_store.load_creds(pw)
+            except ValueError as e:
+                messagebox.showerror("Error", str(e))
+                return
+        win = tk.Toplevel(self.root)
+        win.title("AWS keys (unlocked this window only)")
+        win.geometry("480x220")
+        tk.Label(win, text="Access Key ID:").pack(anchor=tk.W, padx=10, pady=(10, 0))
+        a_entry = tk.Entry(win, width=55)
+        a_entry.pack(padx=10)
+        a_entry.insert(0, cur_a)
+        tk.Label(win, text="Secret Access Key:").pack(anchor=tk.W, padx=10)
+        s_entry = tk.Entry(win, width=55, show="*")
+        s_entry.pack(padx=10)
+        s_entry.insert(0, cur_s)
+
+        def save():
+            a, s = a_entry.get().strip(), s_entry.get().strip()
+            if not a or not s:
+                messagebox.showwarning("Missing", "Both fields are required.")
+                return
+            secure_store.save_creds(pw, a, s)
+            self._refresh_cred_status()
+            self.log(f"AWS keys saved (encrypted).")
+            win.destroy()
+            messagebox.showinfo("Saved", "AWS keys saved encrypted. Window closed & locked again.")
+
+        ttk.Button(win, text="Save encrypted", command=save).pack(pady=12)
+        win.transient(self.root)
+        win.grab_set()
+
+    def on_clear_creds(self):
+        pw = self._require_password()
+        if pw is None:
+            return
+        if messagebox.askyesno("Confirm", "Delete saved AWS keys from this PC?"):
+            secure_store.clear_creds()
+            self._refresh_cred_status()
+            self.log("Saved AWS keys cleared.")
+
+    def _get_scan_creds(self):
+        """Scanning uses saved creds WITHOUT showing them."""
+        if not auth.has_password() or not secure_store.has_saved_creds():
+            messagebox.showinfo("Keys needed",
+                                "No saved AWS keys. Go to Settings → View / update AWS keys…")
+            return None
+        # quick unlock: ask password each scan? No — use cached unlock per session?
+        # Spec: change/view needs password, scanning should just work.
+        # So we try: if a session unlock exists, reuse; else ask once per app run.
+        if getattr(self, "_session_pw", None) and auth.verify_password(self._session_pw):
+            try:
+                return secure_store.load_creds(self._session_pw)
+            except ValueError:
+                pass
+        pw = ask_password(self.root, "Enter app password once to unlock this scan:")
+        if not pw or not auth.verify_password(pw):
+            if pw:
+                messagebox.showerror("Denied", "Incorrect app password.")
+            return None
+        try:
+            creds = secure_store.load_creds(pw)
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+            return None
+        self._session_pw = pw  # keep in memory only, never written to disk
+        return creds
+
+    # ---------- scan (non-blocking) ----------
+    def log(self, msg):
+        self.log_text.config(state="normal")
+        self.log_text.insert(tk.END, msg + "\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state="disabled")
+
+    def start_scan(self):
+        if self.scanning:
+            return
+        creds = self._get_scan_creds()
+        if not creds:
+            return
+        access, secret = creds
+        # validate fast before threading
+        try:
+            self.status.config(text="Checking keys…")
+            self.root.update_idletasks()
+            acct = scanner.check_creds(access, secret)
+            self.log(f"Keys OK. Account: {acct}")
+        except Exception as e:
+            messagebox.showerror("AWS auth failed",
+                                 f"Keys rejected by AWS:\n{e}\n\nUpdate keys in Settings.")
+            self.status.config(text="Auth failed.")
+            return
+
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        self.stop_event.clear()
+        self.scanning = True
+        self.scan_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        self.done_tasks = 0
+
+        target = self.region_var.get()
+        regions = scanner.REGIONS if target == "ALL regions" else [target]
+        # +3 global jobs
+        self.total_tasks = len(regions) + 3
+        self.progress["maximum"] = self.total_tasks
+        self.progress["value"] = 0
+        self.status.config(text=f"Scanning {len(regions)} region(s) + global services…")
+
+        t = threading.Thread(target=self._scan_worker,
+                             args=(regions, access, secret), daemon=True)
+        t.start()
+
+    def stop_scan(self):
+        self.stop_event.set()
+        self.log("Stopping after current calls finish…")
+
+    def _scan_worker(self, regions, access, secret):
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futs = [ex.submit(self._wrap_region, r, access, secret) for r in regions]
+            futs.append(ex.submit(self._wrap_global, "s3", access, secret))
+            futs.append(ex.submit(self._wrap_global, "iam", access, secret))
+            futs.append(ex.submit(self._wrap_global, "route53", access, secret))
+            for f in futs:
+                if self.stop_event.is_set():
+                    break
+                try:
+                    f.result()
+                except Exception:
+                    pass
+        self.q.put(("__done__", None))
+
+    def _wrap_region(self, region, access, secret):
+        if self.stop_event.is_set():
+            self.q.put(("__progress__", region))
+            return
+        try:
+            rows = scanner.scan_region(region, access, secret)
+            for row in rows:
+                self.q.put(("__row__", row))
+        except Exception as e:
+            self.q.put(("__log__", f"{region}: {e}"))
+        finally:
+            self.q.put(("__progress__", region))
+
+    def _wrap_global(self, kind, access, secret):
+        try:
+            if kind == "s3":
+                rows = scanner.scan_s3_global(access, secret)
+            elif kind == "iam":
+                rows = scanner.scan_iam_global(access, secret)
+            else:
+                rows = scanner.scan_route53_global(access, secret)
+            for row in rows:
+                self.q.put(("__row__", row))
+        except Exception:
+            pass
+        finally:
+            self.q.put(("__progress__", kind))
+
+    def _poll_queue(self):
+        try:
+            while True:
+                kind, payload = self.q.get_nowait()
+                if kind == "__row__":
+                    self.tree.insert("", tk.END, values=payload)
+                elif kind == "__progress__":
+                    self.done_tasks += 1
+                    self.progress["value"] = self.done_tasks
+                    self.status.config(
+                        text=f"Scanning… {self.done_tasks}/{self.total_tasks} "
+                             f"({len(self.tree.get_children())} resources found)")
+                elif kind == "__log__":
+                    self.log(payload)
+                elif kind == "__done__":
+                    self.scanning = False
+                    self.scan_btn.config(state=tk.NORMAL)
+                    self.stop_btn.config(state=tk.DISABLED)
+                    n = len(self.tree.get_children())
+                    self.status.config(text=f"Done — {n} billable resources found. Stop/delete what you don't need.")
+                    self.log(f"Scan finished: {n} resources.")
+                    if n == 0:
+                        messagebox.showinfo("Clean", "No billable resources found in scanned scope.")
+        except queue.Empty:
+            pass
+        self.root.after(120, self._poll_queue)
+
+
+def main():
+    root = tk.Tk()
+    AWMonitorApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
