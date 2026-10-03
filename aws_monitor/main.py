@@ -5,7 +5,7 @@ import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import messagebox, simpledialog, ttk
 
-from . import auth, scanner, secure_store
+from . import auth, scanner, secure_store, updater
 
 
 class PasswordDialog(simpledialog.Dialog):
@@ -44,7 +44,7 @@ def asset_path(name: str) -> str:
 class AWMonitorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("AWS Monitor — Bill Saver")
+        self.root.title(f"AWS Monitor — Bill Saver v{updater.get_current_version()}")
         self.root.geometry("1060x760")
         try:
             self.root.iconbitmap(default=asset_path("leaf.ico"))
@@ -56,11 +56,13 @@ class AWMonitorApp:
         self.scanning = False
         self.total_tasks = 1
         self.done_tasks = 0
+        self._pending_update = None
 
         self._build_menu()
         self._build_layout()
         self._refresh_cred_status()
         self.root.after(120, self._poll_queue)
+        threading.Thread(target=self._startup_update_check, daemon=True).start()
 
     # ---------- layout ----------
     def _build_menu(self):
@@ -69,6 +71,8 @@ class AWMonitorApp:
         settings.add_command(label="Set / change app password…", command=self.on_set_password)
         settings.add_command(label="View / update AWS keys… (needs password)", command=self.on_edit_creds)
         settings.add_command(label="Clear saved AWS keys…", command=self.on_clear_creds)
+        settings.add_separator()
+        settings.add_command(label="Check for updates…", command=self.on_check_updates)
         settings.add_separator()
         settings.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="Settings", menu=settings)
@@ -83,6 +87,9 @@ class AWMonitorApp:
 
         ttk.Button(top, text="Unlock / Edit keys", command=self.on_edit_creds).pack(side=tk.LEFT)
         ttk.Button(top, text="Settings: app password", command=self.on_set_password).pack(side=tk.LEFT, padx=6)
+
+        # visible ONLY when a newer release exists (hidden otherwise)
+        self.update_btn = ttk.Button(top, text="Update", command=self.on_update_button)
 
         ctrl = ttk.LabelFrame(self.root, text="Scan", padding=8)
         ctrl.pack(fill=tk.X, padx=8, pady=4)
@@ -252,6 +259,163 @@ class AWMonitorApp:
             return None
         self._session_pw = pw  # keep in memory only, never written to disk
         return creds
+
+    # ---------- self-update ----------
+    def _offer_update(self, pending):
+        """Show the update button (only called when a newer release exists)."""
+        self._pending_update = pending
+        self.update_btn.config(text=f"\u2b06 Update to {pending['tag']}")
+        self.update_btn.pack(side=tk.RIGHT, padx=6)
+        self.status.config(text=f"Update available: {pending['tag']} — click the Update button.")
+
+    def _hide_update_button(self):
+        """Hide the update button — we are on the latest version."""
+        self._pending_update = None
+        self.update_btn.pack_forget()
+
+    def on_update_button(self):
+        if self._pending_update:
+            p = self._pending_update
+            self._show_update_dialog(p["tag"], p["notes"], p["asset"])
+        else:
+            self.on_check_updates()
+
+    def _startup_update_check(self):
+        """Quiet check at launch — update button appears only if an update exists."""
+        try:
+            latest = updater.fetch_latest()
+        except Exception:
+            return
+        tag = latest.get("tag", "")
+        asset = updater.pick_installer(latest.get("assets", []))
+        if tag and asset and updater.is_newer(updater.get_current_version(), tag):
+            pending = {"tag": tag, "notes": latest.get("notes", ""), "asset": asset}
+            self.root.after(0, lambda: self._offer_update(pending))
+        else:
+            self.root.after(0, self._hide_update_button)
+
+    def on_check_updates(self):
+        self.status.config(text="Checking for updates…")
+        threading.Thread(target=self._check_updates_worker, daemon=True).start()
+
+    def _check_updates_worker(self):
+        try:
+            latest = updater.fetch_latest()
+        except RuntimeError as e:
+            self.root.after(0, lambda: messagebox.showerror("Update check", str(e)))
+            self.root.after(0, lambda: self.status.config(text="Update check failed."))
+            return
+        self.root.after(0, lambda: self._handle_latest(latest))
+
+    def _handle_latest(self, latest):
+        cur = updater.get_current_version()
+        tag = latest.get("tag", "")
+        self.status.config(text="Ready.")
+        if not tag:
+            self._hide_update_button()
+            messagebox.showinfo("Updates", "No releases found on GitHub yet.")
+            return
+        if not updater.is_newer(cur, tag):
+            self._hide_update_button()
+            messagebox.showinfo("Updates", f"You are on the latest version (v{cur}).")
+            return
+        asset = updater.pick_installer(latest.get("assets", []))
+        if not asset:
+            self._hide_update_button()
+            messagebox.showwarning(
+                "Updates",
+                f"Version {tag} is available but has no downloadable installer.\n"
+                "Get it from the GitHub Releases page.",
+            )
+            return
+        self._offer_update({"tag": tag, "notes": latest.get("notes", ""), "asset": asset})
+        self._show_update_dialog(tag, latest.get("notes", ""), asset)
+
+    def _show_update_dialog(self, tag, notes, asset):
+        win = tk.Toplevel(self.root)
+        win.title(f"Update available — {tag}")
+        win.geometry("520x420")
+        tk.Label(win, text=f"A new version is available: {tag}",
+                 font=("Segoe UI", 11, "bold")).pack(padx=12, pady=(12, 4))
+        tk.Label(win, text=f"File: {asset['name']}\n"
+                           "The installer will upgrade your current install.\n"
+                           "The app will close when installation starts.").pack(padx=12)
+        box = tk.Text(win, height=10, wrap=tk.WORD)
+        box.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
+        box.insert(tk.END, notes or "(no release notes)")
+        box.config(state="disabled")
+
+        prog = ttk.Progressbar(win, mode="determinate", length=400)
+        prog.pack(padx=12, pady=4, fill=tk.X)
+        status = ttk.Label(win, text="")
+        status.pack(padx=12)
+
+        btn_row = ttk.Frame(win)
+        btn_row.pack(pady=8)
+
+        def set_status(msg):
+            status.config(text=msg)
+
+        def do_download():
+            import os
+            import subprocess
+            import tempfile
+
+            for w in btn_row.winfo_children():
+                w.config(state=tk.DISABLED)
+            set_status("Downloading…")
+
+            dest = os.path.join(tempfile.gettempdir(), asset["name"])
+
+            def on_progress(done, total):
+                def tick():
+                    if total:
+                        prog["maximum"] = total
+                        prog["value"] = min(done, total)
+                    set_status(f"Downloading… {done // 1024} KB"
+                               + (f" / {total // 1024} KB" if total else ""))
+                self.root.after(0, tick)
+
+            def worker():
+                try:
+                    updater.download(asset["url"], dest, progress=on_progress)
+                except Exception as e:
+                    self.root.after(0, lambda: set_status(f"Download failed: {e}"))
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "Update", f"Download failed:\n{e}"))
+                    self.root.after(0, lambda: [w.config(state=tk.NORMAL)
+                                                for w in btn_row.winfo_children()])
+                    return
+
+                def launch():
+                    is_setup = os.path.basename(dest).lower().startswith("setup-")
+                    if is_setup:
+                        set_status("Starting installer…")
+                        try:
+                            subprocess.Popen([dest])
+                        except Exception:
+                            os.startfile(dest)  # noqa: windows-only fallback
+                        self.root.quit()
+                    else:
+                        # portable exe can't replace itself while running
+                        set_status(f"Saved to {dest}")
+                        messagebox.showinfo(
+                            "Update downloaded",
+                            f"New version saved to:\n{dest}\n\n"
+                            "Close this app, then replace your old exe with it.")
+                        try:
+                            subprocess.Popen(["explorer", "/select,", dest])
+                        except Exception:
+                            pass
+
+                self.root.after(0, launch)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        ttk.Button(btn_row, text="Download & Install", command=do_download).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn_row, text="Later", command=win.destroy).pack(side=tk.LEFT, padx=6)
+        win.transient(self.root)
+        win.grab_set()
 
     # ---------- scan (non-blocking) ----------
     def log(self, msg):

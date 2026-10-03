@@ -1,7 +1,9 @@
 ; Inno Setup script for AWS Monitor
 ; Install Inno Setup 6, open this file, press Build -> Compile.
 #define MyAppName "AWS Monitor"
-#define MyAppVersion "1.0.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "AWS Monitor"
 #define MyAppExeName "AWSMonitor.exe"
 
