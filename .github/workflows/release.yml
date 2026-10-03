@@ -26,6 +26,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Stamp build version from tag
+        shell: powershell
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart("v")
+          Set-Content aws_monitor/_build_version.py "VERSION = `"$ver`""
+          Get-Content aws_monitor/_build_version.py
+
       - name: Smoke-test imports
         run: python -c "import aws_monitor.main, aws_monitor.auth, aws_monitor.config, aws_monitor.scanner, aws_monitor.secure_store, aws_monitor.updater; print('imports ok')"
 

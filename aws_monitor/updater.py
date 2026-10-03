@@ -13,6 +13,19 @@ TIMEOUT = 12
 
 
 def get_current_version() -> str:
+    """Version shown in the title bar and used for update checks.
+
+    Prefers the tag-stamped build version (written by CI from the
+    release tag), so the top bar always matches the actual release.
+    Falls back to the hardcoded __version__ for local dev runs.
+    """
+    try:
+        from ._build_version import VERSION
+
+        if VERSION:
+            return VERSION
+    except Exception:
+        pass
     from . import __version__
 
     return __version__

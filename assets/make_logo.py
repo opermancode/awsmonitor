@@ -55,7 +55,18 @@ def make():
     img.save(OUT / "leaf.png")
     img.save(OUT / "leaf.ico", sizes=[(16, 16), (24, 24), (32, 32),
                                       (48, 48), (64, 64), (128, 128), (256, 256)])
-    print("wrote leaf.png + leaf.ico")
+
+    # Installer wizard images (BMP on white — Inno Setup requirement)
+    thumb = img.resize((140, 140), Image.LANCZOS)
+    wiz = Image.new("RGB", (164, 314), "white")
+    wiz.paste(thumb, (12, 30), thumb)
+    ImageDraw.Draw(wiz).rectangle([0, 300, 164, 314], fill=(27, 94, 32))
+    wiz.save(OUT / "wizard.bmp")
+    lf = img.resize((44, 44), Image.LANCZOS)
+    small = Image.new("RGB", (55, 58), "white")
+    small.paste(lf, (5, 7), lf)
+    small.save(OUT / "wizard_small.bmp")
+    print("wrote leaf.png + leaf.ico + wizard.bmp + wizard_small.bmp")
 
 
 if __name__ == "__main__":

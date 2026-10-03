@@ -15,6 +15,7 @@ a = Analysis(
         'aws_monitor.scanner',
         'aws_monitor.secure_store',
         'aws_monitor.updater',
+        'aws_monitor._build_version',
         'cryptography.hazmat.primitives.kdf.pbkdf2',
     ],
     hookspath=[],

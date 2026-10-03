@@ -15,6 +15,9 @@ venv/
 Setup-AWSMonitor-*.exe
 Output/
 
+# CI-generated build stamp (never commit)
+aws_monitor/_build_version.py
+
 # OS
 Thumbs.db
 .DS_Store

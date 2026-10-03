@@ -480,6 +480,9 @@ class AWMonitorApp:
                     else:
                         # portable exe can't replace itself while running
                         set_status(f"Saved to {dest}")
+                        self._hide_update_button()
+                        self.status.config(
+                            text=f"Update {tag} downloaded — swap the exe to apply it.")
                         messagebox.showinfo(
                             "Update downloaded",
                             f"New version saved to:\n{dest}\n\n"
