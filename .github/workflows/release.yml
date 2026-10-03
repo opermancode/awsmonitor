@@ -26,6 +26,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Smoke-test imports
+        run: python -c "import aws_monitor.main, aws_monitor.auth, aws_monitor.config, aws_monitor.scanner, aws_monitor.secure_store, aws_monitor.updater; print('imports ok')"
+
       - name: Build EXE with PyInstaller
         run: pyinstaller AWSMonitor.spec --noconfirm
 
