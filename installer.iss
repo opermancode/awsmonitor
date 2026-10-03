@@ -2,7 +2,7 @@
 ; Install Inno Setup 6, open this file, press Build -> Compile.
 #define MyAppName "AWS Monitor"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.2.0"
 #endif
 #define MyAppPublisher "AWS Monitor"
 #define MyAppExeName "AWSMonitor.exe"
@@ -15,6 +15,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\AWSMonitor
 DefaultGroupName=AWS Monitor
 OutputBaseFilename=Setup-AWSMonitor-{#MyAppVersion}
+OutputDir=.
 SetupIconFile=assets\leaf.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma

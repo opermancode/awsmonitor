@@ -13,6 +13,7 @@ venv/
 
 # Inno Setup output
 Setup-AWSMonitor-*.exe
+Output/
 
 # OS
 Thumbs.db
