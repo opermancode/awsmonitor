@@ -155,6 +155,8 @@ class AWMonitorApp:
                                     state="readonly", values=["All services"])
         self.svc_box.pack(side=tk.LEFT, padx=6)
         self.svc_box.bind("<<ComboboxSelected>>", lambda _e: self._apply_filter())
+        ttk.Button(filt, text="⬇ Export CSV", command=self.export_csv).pack(
+            side=tk.RIGHT, padx=6)
         self.count_label = ttk.Label(filt, text="0/0 shown")
         self.count_label.pack(side=tk.RIGHT)
 
@@ -328,6 +330,34 @@ class AWMonitorApp:
                 self.tree.insert("", tk.END, values=row)
         self.count_label.config(
             text=f"{len(self.tree.get_children())}/{len(self._all_rows)} shown")
+
+    def export_csv(self):
+        """Save the currently shown (filtered) results to a CSV file."""
+        import csv
+        import datetime
+        from tkinter import filedialog
+
+        rows = [self.tree.item(i, "values") for i in self.tree.get_children()]
+        if not rows:
+            messagebox.showinfo("Export CSV", "Nothing to export — run a scan first.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save scan results as CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            initialfile=f"aws-monitor-{datetime.date.today():%Y%m%d}.csv")
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["Service", "Resource", "Detail", "State", "Region"])
+                w.writerows(rows)
+        except Exception as e:
+            messagebox.showerror("Export CSV", f"Could not write file:\n{e}")
+            return
+        self.log(f"Exported {len(rows)} rows to {path}")
+        messagebox.showinfo("Export CSV", f"Saved {len(rows)} rows to:\n{path}")
 
     def _update_summary(self):
         from collections import Counter
