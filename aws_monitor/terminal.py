@@ -162,16 +162,38 @@ class AWSTerminal(ttk.Frame):
                             self._q.put(("line",
                                          f"  … {done // 1024 // 1024} / "
                                          f"{total // 1024 // 1024} MB"))
-                self._q.put(("line", "Downloaded. Installing (accept the UAC prompt)…"))
-                rc = subprocess.run(
-                    ["msiexec", "/i", dest, "/qn", "/norestart"],
-                    timeout=600).returncode
-                if rc != 0:
-                    self._q.put(("done", f"$ (installer exited with code {rc} — "
-                                        "if you declined the admin prompt, run "
-                                        "`aws install` again and accept it)"))
+                self._q.put(("line", "Downloaded."))
+                self._q.put(("line", ">>> Windows will now ask for administrator "
+                                     "permission — click YES."))
+                self._q.put(("line", ">>> An AWS CLI progress window will then appear."))
+                import ctypes
+                import time
+
+                rc = ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", "msiexec",
+                    f'/i "{dest}" /qb /norestart', None, 1)
+                if rc <= 32:
+                    if rc == 1223:
+                        self._q.put(("done", "$ (cancelled — run `aws install` "
+                                            "again and click YES)"))
+                    else:
+                        self._q.put(("done", f"$ (could not start installer "
+                                            f"(code {rc}) — right-click this app "
+                                            "and 'Run as administrator', then retry)"))
                     return
-                os.environ["PATH"] += os.pathsep + AWSCLI_DIR
+                # runas returns immediately — wait until aws.exe shows up
+                self._q.put(("line", "Installing… (progress window is showing)"))
+                deadline = time.time() + 600
+                while time.time() < deadline:
+                    if os.path.exists(existing):
+                        break
+                    time.sleep(2)
+                if not os.path.exists(existing):
+                    self._q.put(("done", "$ (timed out waiting for the install — "
+                                        "run `aws install` again)"))
+                    return
+                if AWSCLI_DIR not in os.environ["PATH"]:
+                    os.environ["PATH"] += os.pathsep + AWSCLI_DIR
             # verify
             check = subprocess.run(["aws", "--version"], capture_output=True,
                                    text=True, timeout=60)
