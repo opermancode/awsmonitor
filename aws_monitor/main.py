@@ -57,9 +57,11 @@ class AWMonitorApp:
         self.scanning = False
         self.total_tasks = 1
         self.done_tasks = 0
+        self._auth_failed = False
         self._pending_update = None
         self._all_rows: list = []
         self._services: set = set()
+        self.selected_services = None  # None = all services
 
         try:
             style = ttk.Style()
@@ -127,13 +129,16 @@ class AWMonitorApp:
         self.scan_btn.grid(row=0, column=2, padx=6)
         self.stop_btn = ttk.Button(ctrl, text="Stop", command=self.stop_scan, state=tk.DISABLED)
         self.stop_btn.grid(row=0, column=3, padx=6)
+        self.service_btn = ttk.Button(ctrl, text="Services: All (20)",
+                                      command=self._open_service_picker)
+        self.service_btn.grid(row=0, column=4, padx=6)
 
         self.progress = ttk.Progressbar(ctrl, mode="determinate", length=400)
-        self.progress.grid(row=0, column=4, padx=10, sticky=tk.EW)
-        ctrl.columnconfigure(4, weight=1)
+        self.progress.grid(row=0, column=5, padx=10, sticky=tk.EW)
+        ctrl.columnconfigure(5, weight=1)
 
         self.status = ttk.Label(ctrl, text="Ready. Keys stay saved & locked behind your app password.")
-        self.status.grid(row=1, column=0, columnspan=5, sticky=tk.W, pady=(6, 0))
+        self.status.grid(row=1, column=0, columnspan=6, sticky=tk.W, pady=(6, 0))
 
         self.tabs = ttk.Notebook(self.root)
         self.tabs.pack(fill=tk.BOTH, expand=True, padx=8)
@@ -181,10 +186,14 @@ class AWMonitorApp:
         self.terminal = AWSTerminal(cli_tab, creds_provider=self._get_scan_creds)
         self.terminal.pack(fill=tk.BOTH, expand=True)
 
-        logf = ttk.LabelFrame(self.root, text="Log", padding=4)
+        logf = ttk.LabelFrame(self.root, text="Scan Log (step by step)", padding=4)
         logf.pack(fill=tk.X, padx=8, pady=6)
-        self.log_text = tk.Text(logf, height=5, state="disabled")
-        self.log_text.pack(fill=tk.X)
+        self.log_text = tk.Text(logf, height=6, state="disabled")
+        log_scroll = ttk.Scrollbar(logf, orient=tk.VERTICAL,
+                                   command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     # ---------- cred lock ----------
     def _refresh_cred_status(self):
@@ -369,6 +378,52 @@ class AWMonitorApp:
         self.summary.config(text="  •  ".join(f"{s}: {n}" for s, n in sorted(c.items()))
                             + f"  •  Total: {len(self._all_rows)}")
 
+    # ---------- scan scope (services picker) ----------
+    def _refresh_service_btn(self):
+        if self.selected_services is None:
+            self.service_btn.config(
+                text=f"Services: All ({len(scanner.SERVICE_LABELS)})")
+        else:
+            self.service_btn.config(
+                text=f"Services: {len(self.selected_services)} selected")
+
+    def _open_service_picker(self):
+        win = tk.Toplevel(self.root)
+        win.title("Choose services to scan")
+        win.geometry("420x520")
+        ttk.Label(win, text="Tick services, or keep All for everything.",
+                  padding=8).pack()
+
+        all_var = tk.BooleanVar(value=self.selected_services is None)
+        ttk.Checkbutton(win, text="All services", variable=all_var).pack(anchor=tk.W,
+                                                                        padx=16)
+
+        box = ttk.Frame(win, padding=8)
+        box.pack(fill=tk.BOTH, expand=True)
+        vars_ = {}
+        for i, svc in enumerate(scanner.SERVICE_LABELS):
+            v = tk.BooleanVar(value=(self.selected_services is None
+                                     or svc in self.selected_services))
+            vars_[svc] = v
+            ttk.Checkbutton(box, text=svc, variable=v).grid(
+                row=i // 2, column=i % 2, sticky=tk.W, padx=8, pady=2)
+
+        def on_ok():
+            if all_var.get():
+                self.selected_services = None
+            else:
+                picked = {s for s, v in vars_.items() if v.get()}
+                if not picked:
+                    messagebox.showwarning("Services", "Pick at least one service.")
+                    return
+                self.selected_services = picked
+            self._refresh_service_btn()
+            win.destroy()
+
+        ttk.Button(win, text="OK", command=on_ok).pack(pady=10)
+        win.transient(self.root)
+        win.grab_set()
+
     # ---------- self-update ----------
     def _offer_update(self, pending):
         """Show the update button (only called when a newer release exists)."""
@@ -543,18 +598,6 @@ class AWMonitorApp:
         if not creds:
             return
         access, secret = creds
-        # validate fast before threading
-        try:
-            self.status.config(text="Checking keys…")
-            self.root.update_idletasks()
-            acct = scanner.check_creds(access, secret)
-            self.log(f"Keys OK. Account: {acct}")
-        except Exception as e:
-            messagebox.showerror("AWS auth failed",
-                                 f"Keys rejected by AWS:\n{e}\n\nUpdate keys in Settings.")
-            self.status.config(text="Auth failed.")
-            return
-
         for i in self.tree.get_children():
             self.tree.delete(i)
         self._all_rows = []
@@ -571,26 +614,51 @@ class AWMonitorApp:
 
         target = self.region_var.get()
         regions = scanner.REGIONS if target == "ALL regions" else [target]
-        # +3 global jobs
-        self.total_tasks = len(regions) + 3
+        sel = self.selected_services  # None = everything
+        regional = [s for s in scanner.REGIONAL_SERVICES
+                    if sel is None or s in sel]
+        kinds = [scanner.GLOBAL_KINDS[s] for s in scanner.GLOBAL_SERVICES
+                 if sel is None or s in sel]
+        if not regional:
+            regions = []  # globals only — no per-region jobs
+        if not regional and not kinds:
+            messagebox.showwarning("Services", "Pick at least one service first.")
+            self.scanning = False
+            self.scan_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+            return
+        scope = ", ".join(regional + [k.upper() for k in kinds])
+        self.total_tasks = len(regions) + len(kinds)
         self.progress["maximum"] = self.total_tasks
         self.progress["value"] = 0
-        self.status.config(text=f"Scanning {len(regions)} region(s) + global services…")
+        self._auth_failed = False
+        self.status.config(text="Checking keys, then scanning…")
+        self.log(f"Scan started: {target} | services: {scope}.")
 
         t = threading.Thread(target=self._scan_worker,
-                             args=(regions, access, secret), daemon=True)
+                             args=(regions, regional, kinds,
+                                   access, secret), daemon=True)
         t.start()
 
     def stop_scan(self):
         self.stop_event.set()
-        self.log("Stopping after current calls finish…")
+        self.log("Stop requested — finishing current calls, then stopping…")
 
-    def _scan_worker(self, regions, access, secret):
+    def _scan_worker(self, regions, regional, kinds, access, secret):
+        # key validation happens here (worker thread) so slow networks
+        # never freeze the window
+        try:
+            acct = scanner.check_creds(access, secret)
+        except Exception as e:
+            self.q.put(("__auth_fail__", str(e)))
+            self.q.put(("__done__", None))
+            return
+        self.q.put(("__log__", f"Keys OK — account {acct}. Scanning…"))
         with ThreadPoolExecutor(max_workers=8) as ex:
-            futs = [ex.submit(self._wrap_region, r, access, secret) for r in regions]
-            futs.append(ex.submit(self._wrap_global, "s3", access, secret))
-            futs.append(ex.submit(self._wrap_global, "iam", access, secret))
-            futs.append(ex.submit(self._wrap_global, "route53", access, secret))
+            futs = [ex.submit(self._wrap_region, r, regional, access, secret)
+                    for r in regions]
+            futs += [ex.submit(self._wrap_global, k, access, secret)
+                     for k in kinds]
             for f in futs:
                 if self.stop_event.is_set():
                     break
@@ -600,27 +668,35 @@ class AWMonitorApp:
                     pass
         self.q.put(("__done__", None))
 
-    def _wrap_region(self, region, access, secret):
+    def _wrap_region(self, region, regional, access, secret):
         if self.stop_event.is_set():
             self.q.put(("__progress__", region))
             return
+        log = lambda m: self.q.put(("__log__", m))  # noqa: E731 (thread-safe)
         try:
-            rows = scanner.scan_region(region, access, secret)
+            self.q.put(("__log__", f"—— {region} ——"))
+            rows = scanner.scan_region(region, access, secret, log=log,
+                                       services=regional or None)
             for row in rows:
                 self.q.put(("__row__", row))
+            self.q.put(("__log__", f"{region}: done, {len(rows)} resource(s)"))
         except Exception as e:
             self.q.put(("__log__", f"{region}: {e}"))
         finally:
             self.q.put(("__progress__", region))
 
     def _wrap_global(self, kind, access, secret):
+        if self.stop_event.is_set():
+            self.q.put(("__progress__", kind))
+            return
+        log = lambda m: self.q.put(("__log__", m))  # noqa: E731 (thread-safe)
         try:
             if kind == "s3":
-                rows = scanner.scan_s3_global(access, secret)
+                rows = scanner.scan_s3_global(access, secret, log=log)
             elif kind == "iam":
-                rows = scanner.scan_iam_global(access, secret)
+                rows = scanner.scan_iam_global(access, secret, log=log)
             else:
-                rows = scanner.scan_route53_global(access, secret)
+                rows = scanner.scan_route53_global(access, secret, log=log)
             for row in rows:
                 self.q.put(("__row__", row))
         except Exception:
@@ -649,7 +725,21 @@ class AWMonitorApp:
                              f"({len(self._all_rows)} resources found)")
                 elif kind == "__log__":
                     self.log(payload)
+                elif kind == "__auth_fail__":
+                    self._auth_failed = True
+                    self.scanning = False
+                    self.scan_btn.config(state=tk.NORMAL)
+                    self.stop_btn.config(state=tk.DISABLED)
+                    self.progress["value"] = 0
+                    self.status.config(text="Auth failed.")
+                    self.log(f"Key check failed: {payload}")
+                    messagebox.showerror("AWS auth failed",
+                                         f"Keys rejected by AWS:\n{payload}\n\n"
+                                         "Update keys in Settings.")
                 elif kind == "__done__":
+                    if self._auth_failed:
+                        self._auth_failed = False
+                        continue
                     self.scanning = False
                     self.scan_btn.config(state=tk.NORMAL)
                     self.stop_btn.config(state=tk.DISABLED)
