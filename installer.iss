@@ -48,9 +48,20 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,AWS Monitor}"
 var
   AWSCLIDownloadPage: TDownloadWizardPage;
 
+function AWSCLIOnPath: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if Exec(ExpandConstant('{sys}\where.exe'), 'aws.exe', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) then
+    Result := ResultCode = 0;
+end;
+
 function AWSCLIInstalled: Boolean;
 begin
-  Result := FileExists(ExpandConstant('{pf}\Amazon\AWSCLIV2\aws.exe'));
+  Result := FileExists(ExpandConstant('{pf}\Amazon\AWSCLIV2\aws.exe'))
+    or AWSCLIOnPath();
 end;
 
 function AWSCLINeeded: Boolean;
