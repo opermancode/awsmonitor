@@ -24,6 +24,9 @@ It's easy to spin up an EC2 instance, RDS database, NAT gateway or load balancer
 - 💻 **Built-in AWS CLI terminal** — run any `aws ...` command with your saved keys (requires [AWS CLI](https://aws.amazon.com/cli/) installed)
 - ⬆️ **In-app updates** — an Update button appears only when a newer release exists; one click downloads and installs it
 
+> 🧭 **New here?** Follow the plain-language **[Setup Guide](SETUP.md)** —
+> install → helper tool → password → keys → first scan.
+
 ## Install
 
 **Recommended:** download `Setup-AWSMonitor-vX.Y.exe` from the
