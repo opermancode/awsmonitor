@@ -104,11 +104,9 @@ class AWMonitorApp:
         ttk.Label(top, text="AWS Monitor", font=("Segoe UI", 13, "bold")).pack(
             side=tk.LEFT, padx=(0, 10))
 
+        # key/password actions live in Settings menu only — dashboard shows state
         self.cred_status = ttk.Label(top, text="AWS keys: …")
         self.cred_status.pack(side=tk.LEFT, padx=(0, 10))
-
-        ttk.Button(top, text="Unlock / Edit keys", command=self.on_edit_creds).pack(side=tk.LEFT)
-        ttk.Button(top, text="Settings: app password", command=self.on_set_password).pack(side=tk.LEFT, padx=6)
 
         # visible ONLY when a newer release exists (hidden otherwise)
         self.update_btn = ttk.Button(top, text="Update", command=self.on_update_button,
